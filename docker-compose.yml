@@ -43,11 +43,18 @@ services:
         reservations:
           cpus: "0.5"
           memory: 256M
+    env_file:
+      - .env
     environment:
       - APP_ENV=dev
-      - APP_SECRET=change_me_in_production_please
-      - PHP_FPM_MAX_CHILDREN=15
-      - PHP_MEMORY_LIMIT=256M
+      - APP_SECRET=${APP_SECRET}
+      - PHP_FPM_MAX_CHILDREN=${PHP_FPM_MAX_CHILDREN}
+      - PHP_MEMORY_LIMIT=${PHP_MEMORY_LIMIT}
+      # Variables BDD — écrasent celles du backend/.env via interpolation DATABASE_URL
+      - DB_HOST=mysql
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
     volumes:
       - symfony_code:/var/www/html
     expose:
@@ -77,13 +84,14 @@ services:
         reservations:
           cpus: "0.1"
           memory: 32M
+    env_file:
+      - .env
     environment:
-      - NGINX_WORKER_PROCESSES=auto
-      - NGINX_WORKER_CONNECTIONS=1024
+      - NGINX_WORKER_PROCESSES=${NGINX_WORKER_PROCESSES}
+      - NGINX_WORKER_CONNECTIONS=${NGINX_WORKER_CONNECTIONS}
     ports:
       - "8080:80"
     volumes:
-      - react_build:/usr/share/nginx/html:ro
       - symfony_code:/var/www/html:ro
     networks:
       - app_network
@@ -97,8 +105,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  react_build:
-    driver: local
   symfony_code:
     driver: local
 

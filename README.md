@@ -1,12 +1,24 @@
-# TP Docker – Architecture virtualisée multi-conteneurs
+# TP Docker – Gestion d'une Entreprise de Soutien Scolaire (Study-Up)
 
 **Auteur** : Julio Tepixtle  
 
+> Plateforme de gestion d'une entreprise de soutien scolaire : planning des cours, paiements/abonnements, espaces Admin / Professeur / Parent.
+
 ---
 
-## Schéma de l'architecture
+## Schémas de l'architecture
 
-![Schéma architecture Docker](./architecture.jpg)
+### Schéma 1 — Infrastructure Docker
+> Conteneurs, volumes, réseau, allocations de ressources
+
+![Schéma 1 – Infrastructure Docker](./schema_infrastructure.jpg)
+
+---
+
+### Schéma 2 — Flux de Communication
+> Routage des requêtes, Hot Reload, FastCGI, base de données
+
+![Schéma 2 – Flux de Communication](./schema_communication.jpg)
 
 ---
 
