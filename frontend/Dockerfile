@@ -5,10 +5,14 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --legacy-peer-deps --force
 
+# On copie le reste des fichiers
 COPY . .
 
-ENV CI=false
-RUN npm run build
+# Pour React, forcer le mode dev et chokidar (hot reload)
+ENV WATCHPACK_POLLING=true
+ENV WDS_SOCKET_PORT=0
 
-# La copie se fait au DÉMARRAGE (CMD) pour écraser le volume partagé à chaque fois
-CMD ["sh", "-c", "cp -r /app/build/* /usr/share/nginx/html/"]
+EXPOSE 3000
+
+# Lancement du serveur de développement React
+CMD ["npm", "start"]

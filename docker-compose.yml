@@ -4,20 +4,23 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: tp-docker/frontend:1.0
+    image: tp-docker/frontend:1.0-dev
     deploy:
       resources:
         limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
           cpus: "0.5"
           memory: 512M
-        reservations:
-          cpus: "0.25"
-          memory: 256M
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
       - CI=false
+      - CHOKIDAR_USEPOLLING=true
+      - WDS_SOCKET_PORT=0
     volumes:
-      - react_build:/usr/share/nginx/html
+      - ./frontend:/app
+      - /app/node_modules
     networks:
       - app_network
     depends_on:
@@ -25,26 +28,26 @@ services:
         condition: service_healthy
     stop_signal: SIGTERM
     stop_grace_period: 10s
-    restart: "no"
+    restart: unless-stopped
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: tp-docker/backend:1.0
+    image: tp-docker/backend:1.0-dev
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 256M
+          cpus: "1.5"
+          memory: 512M
         reservations:
           cpus: "0.5"
-          memory: 128M
+          memory: 256M
     environment:
-      - APP_ENV=prod
+      - APP_ENV=dev
       - APP_SECRET=change_me_in_production_please
-      - PHP_FPM_MAX_CHILDREN=10
-      - PHP_MEMORY_LIMIT=128M
+      - PHP_FPM_MAX_CHILDREN=15
+      - PHP_MEMORY_LIMIT=256M
     volumes:
       - symfony_code:/var/www/html
     expose:
@@ -88,7 +91,7 @@ services:
       backend:
         condition: service_healthy
       frontend:
-        condition: service_completed_successfully
+        condition: service_started
     stop_signal: SIGTERM
     stop_grace_period: 10s
     restart: unless-stopped
