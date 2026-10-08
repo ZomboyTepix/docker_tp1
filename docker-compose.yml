@@ -1,0 +1,107 @@
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: tp-docker/frontend:1.0
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    environment:
+      - NODE_ENV=production
+      - CI=false
+    volumes:
+      - react_build:/usr/share/nginx/html
+    networks:
+      - app_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: tp-docker/backend:1.0
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+        reservations:
+          cpus: "0.5"
+          memory: 128M
+    environment:
+      - APP_ENV=prod
+      - APP_SECRET=change_me_in_production_please
+      - PHP_FPM_MAX_CHILDREN=10
+      - PHP_MEMORY_LIMIT=128M
+    volumes:
+      - symfony_code:/var/www/html
+    expose:
+      - "9000"
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "php-fpm", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: ./ngnix
+      dockerfile: Dockerfile
+    image: tp-docker/nginx:1.0
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.1"
+          memory: 32M
+    environment:
+      - NGINX_WORKER_PROCESSES=auto
+      - NGINX_WORKER_CONNECTIONS=1024
+    ports:
+      - "8080:80"
+    volumes:
+      - react_build:/usr/share/nginx/html:ro
+      - symfony_code:/var/www/html:ro
+    networks:
+      - app_network
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_completed_successfully
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
+    restart: unless-stopped
+
+volumes:
+  react_build:
+    driver: local
+  symfony_code:
+    driver: local
+
+networks:
+  app_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24

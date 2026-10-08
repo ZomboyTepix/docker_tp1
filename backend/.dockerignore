@@ -1,0 +1,13 @@
+.git
+.idea
+.vscode
+.DS_Store
+vendor/
+var/
+public/bundles/
+.env.local
+.env.*.local
+phpunit.xml
+phpunit.result.cache
+docker-compose.override.yml
+bin/

@@ -1,0 +1,12 @@
+symfony/framework-bundle==7.2.*
+symfony/console==7.2.*
+symfony/dotenv==7.2.*
+symfony/runtime==7.2.*
+symfony/yaml==7.2.*
+symfony/flex==^2
+php==8.2
+php-ext:intl
+php-ext:zip
+php-ext:opcache
+php-ext:pdo
+composer==2
