@@ -14,7 +14,7 @@ class HelloController extends AbstractController
     public function hello(): JsonResponse
     {
         return new JsonResponse([
-            'message'     => 'Hello World 🐳',
+            'message'     => 'Hello World',
             'service'     => 'Backend Symfony',
             'description' => 'TP Docker – Image backend personnalisée',
             'php_version' => PHP_VERSION,

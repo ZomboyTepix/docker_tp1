@@ -10,6 +10,7 @@ Le socle applicatif comprend une interface React, une API Symfony et un serveur 
 La version actuelle expose une page « Hello World » et une route JSON pour vérifier les
 communications entre les services. Les modules métier ne sont pas implémentés à ce stade.
 Un conteneur de lint contrôle automatiquement la qualité du code frontend.
+Un conteneur de tests vérifie les réponses de l'API Symfony.
 
 ## Démarrage
 
@@ -48,7 +49,7 @@ curl --fail --show-error http://127.0.0.1:8080/api/hello
 ```
 
 Le frontend doit afficher « Hello World ». L'API doit répondre en JSON avec le message
-`Hello World 🐳`. Si `HTTP_PORT` change, adapter les URLs.
+`Hello World`. Si `HTTP_PORT` change, adapter les URLs.
 
 ```sh
 docker compose logs --tail=100 backend frontend nginx
@@ -87,6 +88,41 @@ inutilisée dans `frontend/src/App.js`, par exemple `const variableInutilisee = 
 Relancer le lint : il doit signaler `no-unused-vars` et sortir avec le code `1`.
 Retirer ensuite cette variable et relancer le contrôle pour obtenir le code `0`.
 
+## Tests de l'API Symfony
+
+Les tests utilisent PHPUnit et passent par le routeur et les contrôleurs Symfony.
+Le noyau traite les requêtes en mémoire : Nginx, React et un serveur PHP-FPM ne sont pas
+nécessaires pour lancer ce contrôle.
+
+```sh
+docker compose run --rm --no-deps --build test
+```
+
+| Test | Résultat attendu |
+|---|---|
+| `GET /api/hello` | Réponse `200`, format JSON, message et nom du service attendus. |
+| `GET /` dans Symfony | Réponse `200` et statut `OK`. |
+| `POST /api/hello` | Réponse `405`, car cette route accepte seulement les requêtes GET. |
+| `GET /api/inconnue` | Réponse `404`. |
+
+La racine est testée directement dans Symfony. Dans l'application accessible au navigateur,
+Nginx envoie cette même URL à React.
+
+Les quatre tests doivent réussir. PHPUnit retourne `0` en cas de réussite et une valeur
+différente en cas d'échec ou d'erreur. Le rapport est conservé dans `reports/junit.xml`.
+Le format JUnit permet à un outil de CI de lire les résultats de chaque test.
+
+Pour vérifier qu'une régression est détectée, remplacer temporairement `Hello World`
+par un autre message dans `backend/src/Controller/HelloController.php`, puis relancer :
+
+```sh
+docker compose run --rm --no-deps test
+```
+
+Le test de `/api/hello` doit échouer. Remettre ensuite le message initial et relancer les tests.
+Les sources sont montées dans le conteneur : une modification du contrôleur ne demande pas
+de reconstruire l'image de tests.
+
 ## Architecture et communications
 
 ```mermaid
@@ -112,6 +148,7 @@ Les dépendances applicatives sont installées depuis les manifestes de ce dép�
 | Backend | `backend/` | `tp-docker/backend:1.0-dev` | Extensions PHP, dépendances Symfony, utilisateur et entrypoint de configuration. |
 | Serveur web | `ngnix/` | `tp-docker/nginx:1.0` | Routage HTTP/FastCGI, modèle de configuration et healthcheck. |
 | Lint | Racine du dépôt, `ci/Dockerfile.lint` | `tp-docker/lint:1.0` | Configuration ESLint, analyse des sources et production d'un rapport. |
+| Tests | Racine du dépôt, `ci/Dockerfile.test` | `tp-docker/test:1.0` | PHPUnit, tests de l'API et rapport JUnit. |
 | Outil de dépendances | `frontend/`, cible `tooling` | `tp-docker/frontend-tooling:1.0-dev` | Manifeste npm et environnement commun à l'image frontend pour préparer son verrouillage. |
 
 ### Frontend React
@@ -177,6 +214,38 @@ Les sources et la configuration ESLint sont montées en lecture seule. Seul `rep
 monté en écriture pour conserver le résultat sur l'hôte. Le conteneur n'expose aucun port et
 utilise `network_mode: none` : l'analyse n'a pas besoin de communiquer avec l'application ni
 avec Internet. Les téléchargements npm ont lieu au build, avant cette isolation réseau.
+
+### Image de tests et choix de CI
+
+- La base `php:8.2-cli-alpine` utilise la même version majeure et mineure de PHP que le backend.
+  Le mode CLI convient à une commande de tests qui se termine après son exécution.
+- PHPUnit `11.5.57` est compatible avec PHP 8.2. Il est téléchargé sous forme de PHAR,
+  une archive contenant l'outil et ses dépendances. La version est fixée au build.
+- Ce choix garde PHPUnit dans l'image de tests et conserve le `composer.lock` de l'application.
+- `curl` télécharge les installateurs et le PHAR ; `unzip` extrait les dépendances Composer ;
+  `git` permet à Composer de récupérer un paquet depuis un dépôt si nécessaire.
+- `composer install --no-dev --no-scripts` installe les dépendances de l'application depuis
+  le lock. Les scripts de démarrage de Symfony ne sont pas lancés pendant cette installation.
+- `WORKDIR /app` fixe le répertoire de travail. `COPY` apporte les sources, la configuration,
+  les tests et les valeurs publiques de `backend/.env.example`.
+
+`APP_ENV=test`, `APP_DEBUG=0`, `APP_SECRET=ci-test-secret` et `DEFAULT_URI` sont définis dans
+l'image pour isoler l'exécution des tests. La clé utilisée ici est une valeur publique de test.
+Le fichier `tests/bootstrap.php` charge l'autoloader Composer et les valeurs d'environnement.
+
+`backend/phpunit.xml` indique le dossier des tests et place le cache PHPUnit dans `/tmp`.
+Chaque test crée un noyau Symfony, envoie une requête, vérifie la réponse et ferme le noyau.
+Le cache Symfony reste dans le conteneur, qui est supprimé après le contrôle.
+
+L'entrypoint lance `ci/test-entrypoint.sh`. Le script crée le dossier des rapports avec
+`mkdir`, retire l'ancien rapport avec `rm` et lance PHPUnit avec `exec`. Le code de sortie
+de PHPUnit est ainsi transmis à Docker, et le signal `SIGTERM` arrive au processus PHP.
+La mémoire PHP est limitée à `128M` ; le quota Docker limite l'ensemble du conteneur.
+
+Le service `test` appartient au profil `ci`, utilise `restart: "no"` et ne publie aucun port.
+`network_mode: none` convient aux requêtes traitées en mémoire. Les téléchargements ont lieu
+au build. Le code, les tests et la configuration sont montés en lecture seule ; seul le
+dossier `reports/` est monté en écriture. Aucun outil PHP n'est à installer sur la machine hôte.
 
 ### Outil de gestion des dépendances
 
@@ -280,6 +349,7 @@ Les fichiers `.env.example` sont versionnés ; les fichiers de configuration loc
 | Backend | `BACKEND_CPUS`, `BACKEND_MEMORY` | 1,5 CPU / 512 Mo | Budget partagé par PHP-FPM, ses workers et OPcache. |
 | Nginx | `NGINX_CPUS`, `NGINX_MEMORY` | 0,25 CPU / 64 Mo | Proxy léger, avec un worker par défaut. |
 | Lint | `LINT_CPUS`, `LINT_MEMORY` | 0,5 CPU / 512 Mo | Analyse ponctuelle d'un petit frontend, avec chargement du parseur et des règles React. |
+| Tests | `TEST_CPUS`, `TEST_MEMORY` | 0,5 CPU / 256 Mo | Exécution de PHPUnit et du noyau Symfony pour les quatre tests de l'API. |
 
 `cpus` limite le temps CPU et `mem_limit` la mémoire du conteneur. Ce sont des plafonds,
 pas des réservations. Ils s'appliquent aux conteneurs lancés, pas aux commandes de build.
@@ -298,6 +368,7 @@ transmet les variables d'environnement et `--publish` configure la publication d
 | `NGINX_WORKER_CONNECTIONS=1024` | Maximum de connexions par worker Nginx. |
 | `HOST`, `PORT`, `WATCHPACK_POLLING`, `WDS_SOCKET_PORT` | Écoute React sur le réseau Docker et rechargement via le proxy. |
 | `LINT_REPORT_DIR=/reports` | Répertoire du rapport dans le conteneur de lint, monté vers `reports/` sur l'hôte. |
+| `TEST_REPORT_DIR=/reports` | Répertoire du rapport JUnit dans le conteneur de tests. |
 
 Les quotas sont adaptés à une exécution locale, à observer avec `docker stats`.
 La mémoire des workers et le cache partagé consomment le budget total du backend : augmenter
@@ -354,6 +425,8 @@ ou sources du backend, utiliser `docker compose up --build -d --wait --wait-time
 - [Services optionnels avec les profils Compose](https://docs.docker.com/compose/how-tos/profiles/)
 - [Installation Composer depuis le lock](https://getcomposer.org/doc/03-cli.md#install-i)
 - [Configuration Symfony](https://symfony.com/doc/7.2/configuration.html)
+- [Tests Symfony](https://symfony.com/doc/7.2/testing.html)
+- [Compatibilité PHP et PHPUnit](https://phpunit.de/supported-versions.html)
 - [Rendu des modèles Nginx](https://github.com/nginx/docker-nginx/blob/master/entrypoint/20-envsubst-on-templates.sh)
 - [Signaux Nginx](https://nginx.org/en/docs/control.html)
 - [Signaux PHP-FPM](https://github.com/php/php-src/blob/master/sapi/fpm/php-fpm.8.in)

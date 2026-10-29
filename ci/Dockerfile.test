@@ -1,0 +1,39 @@
+FROM php:8.2-cli-alpine
+
+ARG PHPUNIT_VERSION=11.5.57
+
+# Outils pour télécharger et installer les dépendances PHP.
+RUN apk add --no-cache curl git unzip
+
+RUN curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php \
+    && php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer \
+    && rm /tmp/composer-setup.php
+
+# Le PHAR contient PHPUnit et ses propres dépendances.
+RUN curl -fsSL "https://phar.phpunit.de/phpunit-${PHPUNIT_VERSION}.phar" \
+        -o /usr/local/bin/phpunit.phar \
+    && php /usr/local/bin/phpunit.phar --version
+
+WORKDIR /app
+
+COPY backend/composer.json backend/composer.lock backend/symfony.lock ./
+RUN composer install --no-dev --no-scripts --prefer-dist --no-interaction
+
+COPY backend/src ./src
+COPY backend/config ./config
+COPY backend/public ./public
+COPY backend/tests ./tests
+COPY backend/phpunit.xml ./phpunit.xml
+COPY backend/.env.example ./.env
+COPY ci/test-entrypoint.sh /usr/local/bin/test-entrypoint.sh
+
+# Ces valeurs servent uniquement aux tests.
+ENV APP_ENV=test
+ENV APP_DEBUG=0
+ENV APP_SECRET=ci-test-secret
+ENV DEFAULT_URI=http://127.0.0.1:8080
+ENV TEST_REPORT_DIR=/reports
+
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["sh", "/usr/local/bin/test-entrypoint.sh"]
+CMD []

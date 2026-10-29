@@ -9,5 +9,6 @@ public/bundles/
 .env.*
 !.env.example
 phpunit.xml
+tests/
 phpunit.result.cache
 docker-compose.override.yml
