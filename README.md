@@ -1,318 +1,284 @@
-# TP Docker – Gestion d'une Entreprise de Soutien Scolaire (Study-Up)
+# TP Docker – Gestion d'une entreprise de soutien scolaire
 
-**Auteur** : Julio Tepixtle  
+**Auteur : Julio Tepixtle**
 
-> Plateforme de gestion d'une entreprise de soutien scolaire : planning des cours, paiements/abonnements, espaces Admin / Professeur / Parent.
+Le projet met en place une architecture Docker pour une plateforme de gestion d'une
+entreprise de soutien scolaire. Le domaine métier comprend le planning des cours,
+les paiements et abonnements, ainsi que les espaces parent, professeur et administrateur.
 
----
+Le socle applicatif comprend une interface React, une API Symfony et un serveur web Nginx.
+La version actuelle expose une page « Hello World » et une route JSON pour vérifier les
+communications entre les services. Les modules métier ne sont pas implémentés à ce stade.
 
-## Schémas de l'architecture
+## Démarrage
 
-### Schéma 1 — Infrastructure Docker
-> Conteneurs, volumes, réseau, allocations de ressources
+Prérequis : Docker Desktop démarré et Docker Compose. Les commandes Node.js et npm
+s'exécutent dans les conteneurs.
 
-![Schéma 1 – Infrastructure Docker](./schema_infrastructure.jpg)
+Pour une nouvelle copie du dépôt, préparer la configuration locale :
 
----
-
-### Schéma 2 — Flux de Communication
-> Routage des requêtes, Hot Reload, FastCGI, base de données
-
-![Schéma 2 – Flux de Communication](./schema_communication.jpg)
-
----
-
-## Structure du projet
-
-```
-TP1/
-├── docker-compose.yml
-├── architecture.jpg
-├── README.md
-├── frontend/
-│   ├── Dockerfile
-│   ├── .dockerignore
-│   ├── package.json
-│   ├── public/index.html
-│   └── src/ (App.js, index.js)
-├── backend/
-│   ├── Dockerfile
-│   ├── .dockerignore
-│   ├── .env
-│   ├── composer.json
-│   ├── public/index.php
-│   └── src/Controller/HelloController.php
-└── ngnix/
-    ├── Dockerfile
-    ├── nginx.conf
-    └── default.conf
+```sh
+cp .env.example .env
 ```
 
----
+Choisir ensuite une valeur locale pour `APP_SECRET` dans `.env`. Une clé peut être générée
+avec `openssl rand -hex 32`. Conserver un `.env` existant plutôt que l'écraser.
 
-## 1. Image Frontend – React (`frontend/Dockerfile`)
+Pour préparer ou actualiser `frontend/package-lock.json`, utiliser l'outil de dépendances
+depuis la racine du dépôt :
 
-### Image de base : `node:20-alpine`
-
-Utilisation d'un **build multi-stage** :
-
-| Stage | Image | Rôle |
-|---|---|---|
-| `builder` | `node:20-alpine` | Compile le code React (`npm run build`) |
-| `runner` | `nginx:1.25-alpine` | Sert les fichiers statiques produits |
-
-Le stage final ne contient **pas Node.js** → image finale ≈ 40 Mo au lieu de ~1 Go.
-
-### Dépendances installées
-
-| Dépendance | Raison |
-|---|---|
-| `node:20-alpine` | Runtime Node.js LTS pour `npm install` et `npm run build` |
-| `react`, `react-dom` | Librairie frontend |
-| `react-scripts` | Outil de build et bundler (Webpack) fourni par Create React App |
-
-### Manipulation OS
-
-- `RUN rm -f /etc/nginx/conf.d/default.conf` : suppression de la config Nginx par défaut pour imposer la nôtre.
-- `RUN echo '...' > /etc/nginx/conf.d/react.conf` : injection d'une config Nginx minimale avec `try_files` pour le routing SPA.
-
-### Port exposé
-
-| Port | Protocole | Raison |
-|---|---|---|
-| `80` | HTTP | Port standard Nginx pour servir les fichiers React |
-
-### Entrypoint
-
-```dockerfile
-CMD ["nginx", "-g", "daemon off;"]
+```sh
+docker compose run --rm --no-deps --build frontend-deps
 ```
 
-`daemon off;` est obligatoire dans Docker : si Nginx se met en arrière-plan, le PID 1 se termine et Docker arrête le conteneur.
+Cette commande met à jour le verrouillage et vérifie sa cohérence avec `npm ci --dry-run`
+dans le même environnement Node/npm que le frontend. Elle retourne un échec si une étape
+échoue. Le fichier produit dans `frontend/` doit être versionné avec `package.json`.
+Le build de l'application utilise ensuite `npm ci` pour installer les versions verrouillées.
 
-### SIGTERM
+Depuis la racine du projet :
 
-```dockerfile
-STOPSIGNAL SIGTERM
+```sh
+docker compose config --quiet
+docker compose up --build -d --wait --wait-timeout 180
+docker compose ps
+curl --fail --show-error http://127.0.0.1:8080/
+curl --fail --show-error http://127.0.0.1:8080/api/hello
 ```
 
-Nginx gère SIGTERM nativement : il termine proprement les connexions en cours avant de s'arrêter.
-
----
-
-## 2. Image Backend – Symfony (`backend/Dockerfile`)
-
-### Image de base : `php:8.2-fpm-alpine`
-
-| Choix | Raison |
-|---|---|
-| `php:8.2` | Version stable LTS requise par Symfony 7 |
-| `fpm` | PHP-FPM (FastCGI Process Manager) : gère les workers PHP persistants, architecture standard avec Nginx |
-| `alpine` | Image minimale (~20 Mo), réduit la surface d'attaque |
-
-### Dépendances système (`apk add --no-cache`)
-
-| Paquet | Raison |
-|---|---|
-| `git` | Requis par Composer pour résoudre des dépendances VCS |
-| `unzip` | Composer décompresse les archives ZIP des packages |
-| `curl` | Téléchargement de l'installateur Composer |
-| `icu-dev` | Bibliothèque ICU → compile l'extension PHP `intl` |
-| `libzip-dev` | Bibliothèque ZIP → compile l'extension PHP `zip` |
-| `linux-headers` | Headers kernel requis pour compiler certaines extensions C |
-
-### Extensions PHP (`docker-php-ext-install`)
-
-| Extension | Raison |
-|---|---|
-| `intl` | Internationalisation (dates, monnaies, traductions) – requis par Symfony |
-| `zip` | Gestion des archives ZIP (Composer, assets) |
-| `opcache` | Cache de bytecode PHP → améliore les performances de 2 à 5× |
-| `pdo` | Couche d'abstraction base de données |
-
-### Manipulation OS
-
-- **Création utilisateur non-root** `symfony` (UID 1000) : exécuter PHP-FPM en root est une mauvaise pratique de sécurité.
-- **OPcache** configuré via `/usr/local/etc/php/conf.d/opcache.ini` : `validate_timestamps=0` en production (pas de rechargement automatique des fichiers PHP, performances maximales).
-- **Composer** installé via son installateur officiel dans `/usr/local/bin/composer`.
-- `composer install --no-dev --optimize-autoloader` : installation sans dépendances de dev, autoloader optimisé (classmap).
-- `mkdir -p var/cache var/log && chown -R symfony:symfony var/` : Symfony doit pouvoir écrire dans `var/`.
-
-### Port exposé
-
-| Port | Protocole | Raison |
-|---|---|---|
-| `9000` | TCP (FastCGI) | Port par défaut de PHP-FPM – accessible uniquement en interne via `app_network` |
-
-### Entrypoint
-
-```dockerfile
-CMD ["php-fpm"]
-```
-
-Lance PHP-FPM en foreground. PHP-FPM maintient un pool de processus PHP en attente de requêtes FastCGI provenant de Nginx.
-
-### SIGTERM
-
-```dockerfile
-STOPSIGNAL SIGTERM
-```
-
-PHP-FPM gère SIGTERM (graceful stop) : il attend la fin du traitement des requêtes en cours avant de s'arrêter, sans couper de connexions brutalement.
-
----
-
-## 3. Image Nginx – Serveur Web (`ngnix/Dockerfile`)
-
-### Image de base : `nginx:1.25-alpine`
-
-| Choix | Raison |
-|---|---|
-| `nginx:1.25` | Version stable mainline, supporte HTTP/2 |
-| `alpine` | ≈ 40 Mo vs 190 Mo pour la version Debian |
-
-### Dépendances installées
-
-| Paquet | Raison |
-|---|---|
-| `curl` | Utilisé par le `HEALTHCHECK` Docker pour vérifier que Nginx répond |
-
-### Manipulation OS
-
-- **Remplacement de la config** : suppression de `nginx.conf` et `default.conf` par défaut, remplacés par nos fichiers custom.
-- **Utilisateur `webuser`** (UID 1001) : les workers Nginx tournent sans privilège root.
-- **`nginx.conf`** : configure les workers (`auto`), la compression gzip, le format de logs.
-- **`default.conf`** : configure le reverse proxy :
-  - `GET /` → fichiers statiques React
-  - `GET /api/*` → forwarding FastCGI vers `backend:9000`
-
-### Port exposé
-
-| Port | Raison |
-|---|---|
-| `80` | Point d'entrée HTTP unique du système, mappé sur `8080` côté hôte |
-
-### Entrypoint
-
-```dockerfile
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-Même raison que pour le frontend : Nginx doit rester en foreground pour que le conteneur reste actif.
-
-### Health Check
-
-```dockerfile
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=5s \
-    CMD curl -f http://localhost/ || exit 1
-```
-
-Docker vérifie toutes les 30s que Nginx répond. Après 3 échecs → conteneur marqué `unhealthy`.
-
-### SIGTERM
-
-```dockerfile
-STOPSIGNAL SIGTERM
-```
-
-Nginx effectue un arrêt gracieux sur SIGTERM.
-
----
-
-## 4. Docker Compose – Orchestration
-
-### Arguments au run – Ressources allouées
-
-| Service | CPU limit | RAM limit | CPU réservé | RAM réservée | Justification |
-|---|---|---|---|---|---|
-| `frontend` | 0.5 cœur | 512 Mo | 0.25 cœur | 256 Mo | Build npm gourmand en mémoire |
-| `backend` | 1.0 cœur | 256 Mo | 0.5 cœur | 128 Mo | PHP-FPM multi-workers |
-| `nginx` | 0.25 cœur | 64 Mo | 0.1 cœur | 32 Mo | Event-driven, très léger |
-
-### Variables d'environnement (arguments au run)
-
-**Frontend :**
-
-| Variable | Valeur | Raison |
-|---|---|---|
-| `NODE_ENV` | `production` | Active le build React optimisé (minification, tree-shaking) |
-| `CI` | `false` | Empêche les warnings de faire échouer le build |
-
-**Backend :**
-
-| Variable | Valeur | Raison |
-|---|---|---|
-| `APP_ENV` | `prod` | Symfony désactive le debug, active l'optimisation |
-| `APP_SECRET` | `change_me_...` | Clé secrète pour CSRF et sessions |
-| `PHP_FPM_MAX_CHILDREN` | `10` | Nombre max de workers PHP parallèles |
-| `PHP_MEMORY_LIMIT` | `128M` | Limite mémoire par processus PHP |
-
-**Nginx :**
-
-| Variable | Valeur | Raison |
-|---|---|---|
-| `NGINX_WORKER_PROCESSES` | `auto` | Un worker par CPU disponible |
-| `NGINX_WORKER_CONNECTIONS` | `1024` | Connexions simultanées max par worker |
-
-### Gestion des SIGTERM
-
-Chaque service déclare :
-
-```yaml
-stop_signal: SIGTERM
-stop_grace_period: 30s   # backend (PHP-FPM attend la fin des requêtes)
-stop_grace_period: 10s   # nginx, frontend
-```
-
-`stop_grace_period` : Docker attend ce délai avant d'envoyer SIGKILL si le processus ne s'est pas arrêté. Cela permet un **arrêt gracieux** (aucune requête coupée brutalement).
-
-### Ordre de démarrage (dépendances entre conteneurs)
-
-```yaml
-depends_on:
-  backend:
-    condition: service_healthy       # Nginx attend que PHP-FPM soit prêt (healthcheck)
-  frontend:
-    condition: service_completed_successfully  # Nginx attend que le build React soit terminé
-```
-
-Ordre garanti : `frontend` (build) → `backend` (healthcheck OK) → `nginx` (démarrage)
-
-### Volumes partagés
-
-| Volume | Services | Mode |
-|---|---|---|
-| `react_build` | `frontend` (écriture) → `nginx` (lecture) | Partage les fichiers React buildés |
-| `symfony_code` | `backend` (écriture) → `nginx` (lecture) | Partage le code PHP pour FastCGI |
-
-### Réseau interne
-
-```yaml
-networks:
-  app_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
-```
-
-Réseau bridge dédié : les services se joignent par leur **nom de service** (`backend:9000`) et sont isolés du reste des conteneurs Docker de la machine hôte.
-
----
-
-## Lancement
-
-```bash
-# Build et démarrage
-docker compose up --build -d
-
-# Accès
-# Frontend React : http://localhost:8080/
-# API Symfony   : http://localhost:8080/api/hello
-
-# Logs
-docker compose logs -f
-
-# Arrêt propre (SIGTERM envoyé à chaque service)
+Le frontend doit afficher « Hello World ». L'API doit répondre en JSON avec le message
+`Hello World 🐳`. Si `HTTP_PORT` change, adapter les URLs.
+
+```sh
+docker compose logs --tail=100 backend frontend nginx
 docker compose down
 ```
+
+`docker compose down` arrête les conteneurs et supprime le réseau de cette stack.
+
+## Architecture et communications
+
+```mermaid
+flowchart TD
+    client["Navigateur"] -->|"HTTP 127.0.0.1:8080"| nginx["Nginx :80"]
+    nginx -->|"HTTP et WebSocket"| frontend["React :3000"]
+    nginx -->|"FastCGI /api/*"| backend["Symfony PHP-FPM :9000"]
+```
+
+Seul Nginx publie un port, limité à `127.0.0.1` pour l'usage local. React et PHP-FPM
+communiquent sur le réseau bridge `app_network`, par leurs noms de service.
+Docker choisit le sous-réseau : aucune plage IP fixe n'est imposée.
+Il n'y a pas encore de service de base de données ni de connexion SQL utilisée par l'API.
+
+## Images personnalisées
+
+Chaque service a son Dockerfile et sa personnalisation à partir d'une image de base.
+Les dépendances applicatives sont installées depuis les manifestes de ce dépôt.
+
+| Service | Contexte de build | Image produite | Personnalisation |
+|---|---|---|---|
+| Frontend | `frontend/` | `tp-docker/frontend:1.0-dev` | Code React, dépendances npm et commande du serveur de développement. |
+| Backend | `backend/` | `tp-docker/backend:1.0-dev` | Extensions PHP, dépendances Symfony, utilisateur et entrypoint de configuration. |
+| Serveur web | `ngnix/` | `tp-docker/nginx:1.0` | Routage HTTP/FastCGI, modèle de configuration et healthcheck. |
+| Outil de dépendances | `frontend/`, cible `tooling` | `tp-docker/frontend-tooling:1.0-dev` | Manifeste npm et environnement commun à l'image frontend pour préparer son verrouillage. |
+
+### Frontend React
+
+- Image de base : `node:20-alpine`. Node.js exécute les outils React ; la variante Alpine
+  fournit un environnement système minimal.
+- La cible `tooling` prépare le répertoire de travail et copie `package.json`. La cible
+  `development` en hérite et installe les dépendances applicatives depuis le lock.
+- `WORKDIR /app` définit le répertoire de travail ; `COPY` apporte les manifestes puis le code.
+- `npm ci` installe les versions de `package-lock.json` et échoue si ce fichier diverge de `package.json`.
+- `react` et `react-dom` rendent l'interface ; `react-scripts` fournit le serveur de développement
+  et le build ; `ajv` fournit un validateur de schémas JSON aux outils JavaScript.
+- `typescript` est fixé à `4.9.5` comme dépendance de développement pour respecter la
+  compatibilité de l'outillage `react-scripts` ; les sources de l'interface restent en JavaScript.
+- Aucun paquet système supplémentaire n'est installé.
+- Port interne : `3000`. Cette image exécute un serveur React de développement, avec rechargement
+  des sources pour afficher les modifications de l'interface.
+- L'entrypoint Node officiel est conservé. La commande finale lance directement
+  `node node_modules/react-scripts/scripts/start.js`, sans processus npm intermédiaire.
+- `init: true` ajoute un petit processus d'initialisation qui transmet les signaux et récupère
+  les processus enfants terminés.
+
+Les montages `frontend/src` et `frontend/public` sont en lecture seule. Les dépendances
+sont installées dans l'image, tandis que les sources et fichiers publics proviennent des montages.
+Après une modification de `package.json`, exécuter `frontend-deps` puis reconstruire l'image.
+
+### Outil de gestion des dépendances
+
+`frontend-deps` est un conteneur ponctuel du profil `tools`. Il est lancé explicitement
+avec `docker compose run` et reste exclu du démarrage habituel de l'application.
+Il utilise la cible `tooling` du Dockerfile frontend : aucun verrouillage préalable n'est
+nécessaire pour construire cet outil.
+
+Le dossier `frontend/` est monté en lecture-écriture pour enregistrer `package-lock.json`
+dans le dépôt. `npm install --package-lock-only` actualise ce fichier sans installer les
+dépendances sur la machine hôte. `--ignore-scripts` désactive les scripts des paquets pendant
+cette opération. La vérification `npm ci --dry-run` contrôle ensuite la cohérence du résultat
+sans installation. L'installation complète s'effectue au build de la cible `development`.
+
+La commande utilise `sh -ec` pour interrompre le traitement dès qu'une étape échoue.
+`restart: "no"` correspond à une tâche qui se termine, et `--rm` supprime le conteneur après
+son exécution. L'outil n'expose aucun port et utilise les mêmes quotas CPU/RAM que le frontend.
+
+### Backend Symfony
+
+- Image de base : `php:8.2-fpm-alpine`, compatible avec la contrainte PHP du projet Symfony.
+  PHP-FPM gère les processus PHP et reçoit les requêtes FastCGI de Nginx.
+- Le serveur utilise le protocole FastCGI sur le port interne `9000`.
+
+| Dépendance système | Utilité |
+|---|---|
+| `git` | Permet à Composer de récupérer une dépendance depuis un dépôt si nécessaire. |
+| `unzip` | Extraction des archives de dépendances Composer. |
+| `curl` | Téléchargement de l'installateur Composer ; `-f` fait échouer le build sur une erreur HTTP. |
+| `icu-libs`, `libzip` | Bibliothèques conservées à l'exécution pour les extensions `intl` et `zip`. |
+| `icu-dev`, `libzip-dev`, `$PHPIZE_DEPS` | En-têtes et outils de compilation regroupés dans `.build-deps`, puis retirés. |
+
+`apk add --no-cache` évite de conserver un cache d'index de paquets. `apk del .build-deps`
+retire les outils de compilation, tout en conservant les bibliothèques d'exécution.
+
+| Extension PHP compilée | Utilité |
+|---|---|
+| `intl` | Outils d'internationalisation, dates et formats. |
+| `zip` | Gestion des archives ZIP. |
+| `opcache` | Cache du bytecode PHP ; la vérification des fichiers reste active en développement. |
+| `pdo_mysql` | Pilote PDO pour une connexion MySQL ; aucune connexion SQL n'est utilisée par l'API actuelle. |
+
+Composer est installé dans `/usr/local/bin`, puis son installateur temporaire est supprimé.
+`composer install` utilise `composer.lock`, avec `--no-dev` pour l'image applicative et
+`--no-scripts` tant que le code n'est pas copié. Après la copie, l'autoloader est régénéré
+et les scripts Symfony sont exécutés. L'échec d'un script interrompt la construction de l'image.
+Les dépendances PHP sont définies par `composer.json` et verrouillées dans `composer.lock`.
+
+L'utilisateur `symfony` (UID/GID 1000) est créé avec `addgroup` et `adduser`.
+`COPY --chown` lui attribue le code, et `mkdir`/`chown` préparent `var/cache` et `var/log`.
+Le backend s'exécute sous cet utilisateur.
+
+`backend/.env.example` contient uniquement des valeurs publiques de développement et est
+copié vers `.env` dans l'image. Les fichiers `.env` locaux sont exclus du contexte de build.
+Les variables injectées par Compose prennent le dessus sur ces valeurs au démarrage.
+`DEFAULT_URI` définit l'URL de référence utilisée par le routeur Symfony dans les commandes
+CLI, notamment pendant la préparation du cache. Sa valeur au build est `http://127.0.0.1:8080` ;
+au démarrage, Compose permet de la personnaliser et utilise le port `HTTP_PORT` par défaut.
+
+L'entrypoint personnalisé vérifie les valeurs reçues, puis écrit :
+
+- `PHP_MEMORY_LIMIT` dans `/usr/local/etc/php/conf.d/zz-runtime.ini` ;
+- `PHP_FPM_MAX_CHILDREN` dans `/usr/local/etc/php-fpm.d/zz-runtime.conf`.
+
+Ces fichiers sont créés avec `touch` et attribués à `symfony` au build ; `chmod +x`
+rend le script exécutable dans l'image. Le pool fonctionne en mode `ondemand` : les workers
+sont créés à la demande et libérés après 10 secondes d'inactivité.
+Le script finit par `exec docker-php-entrypoint "$@"`, qui transmet la main à `php-fpm -F`.
+L'option `-F` maintient PHP-FPM au premier plan.
+
+Le code du backend est copié dans l'image lors du build. Une reconstruction suivie d'un
+`docker compose up` permet de déployer ses changements.
+Nginx monte seulement `backend/public` en lecture seule pour localiser le point d'entrée PHP.
+
+### Serveur web Nginx
+
+- Image de base : `nginx:1.25-alpine`. Nginx fournit un point d'entrée HTTP unique et prend
+  en charge le proxy HTTP, les WebSocket et le protocole FastCGI.
+- `curl` est ajouté pour le healthcheck.
+- La configuration par défaut est retirée avec `rm` et remplacée par nos fichiers.
+- `webuser` (UID/GID 1001) est créé pour les workers. Le processus maître reste root pour
+  ouvrir le port 80, puis les workers utilisent `user webuser`.
+- `nginx.conf` est copié comme modèle dans `/etc/nginx/templates/nginx.conf.template`.
+- L'entrypoint officiel rend ce modèle dans `/etc/nginx/nginx.conf` grâce à `envsubst`.
+  Le filtre `^NGINX_WORKER_` limite les substitutions aux paramètres des workers et conserve
+  les variables Nginx telles que `$host` ou `$request`.
+- `default.conf` envoie `/api/*` à Symfony via FastCGI, et les autres requêtes à React,
+  y compris les connexions WebSocket du rechargement automatique.
+- Les logs vont vers stdout/stderr, visibles avec `docker compose logs`.
+- `nginx -g 'daemon off;'` maintient le serveur au premier plan.
+
+## Arguments au run et ressources
+
+Le `.env` à la racine sert à l'interpolation Compose. Seules les variables déclarées dans
+`environment` sont transmises aux services concernés.
+Les fichiers `.env.example` sont versionnés ; les fichiers de configuration locaux sont ignorés.
+
+| Service | Paramètres des quotas | Valeurs par défaut | Justification |
+|---|---|---|---|
+| Frontend et outil de dépendances | `FRONTEND_CPUS`, `FRONTEND_MEMORY` | 1,5 CPU / 1024 Mo | Budget pour la compilation React ou la résolution ponctuelle des dépendances npm. |
+| Backend | `BACKEND_CPUS`, `BACKEND_MEMORY` | 1,5 CPU / 512 Mo | Budget partagé par PHP-FPM, ses workers et OPcache. |
+| Nginx | `NGINX_CPUS`, `NGINX_MEMORY` | 0,25 CPU / 64 Mo | Proxy léger, avec un worker par défaut. |
+
+`cpus` limite le temps CPU et `mem_limit` la mémoire du conteneur. Ce sont des plafonds,
+pas des réservations. Ils s'appliquent aux conteneurs lancés, pas aux commandes de build.
+Avec `docker run`, les options correspondantes sont `--cpus` et `--memory` ; `--env`
+transmet les variables d'environnement et `--publish` configure la publication des ports.
+
+| Paramètre | Effet |
+|---|---|
+| `HTTP_PORT=8080` | Publication locale du port 80 de Nginx. |
+| `APP_ENV=dev`, `APP_DEBUG=1` | Environnement Symfony et activation du debug local. |
+| `APP_SECRET` | Clé Symfony, exigée et non vide dans Compose. |
+| `DEFAULT_URI` | URL de référence pour les commandes Symfony, par défaut `http://127.0.0.1:8080`. |
+| `PHP_FPM_MAX_CHILDREN=2` | Maximum de workers PHP-FPM simultanés. |
+| `PHP_MEMORY_LIMIT=128M` | Limite mémoire PHP par traitement, distincte du quota total du conteneur. |
+| `NGINX_WORKER_PROCESSES=1` | Nombre de workers Nginx (`auto` est également accepté par Nginx). |
+| `NGINX_WORKER_CONNECTIONS=1024` | Maximum de connexions par worker Nginx. |
+| `HOST`, `PORT`, `WATCHPACK_POLLING`, `WDS_SOCKET_PORT` | Écoute React sur le réseau Docker et rechargement via le proxy. |
+
+Les quotas sont adaptés à une exécution locale, à observer avec `docker stats`.
+La mémoire des workers et le cache partagé consomment le budget total du backend : augmenter
+le nombre de workers peut nécessiter d'adapter ce budget.
+
+## Disponibilité et ordre de démarrage
+
+1. Le backend démarre ; son healthcheck vérifie qu'un processus accepte les connexions sur `9000`.
+2. Le frontend attend le backend sain ; son healthcheck attend une réponse HTTP sur `3000`.
+3. Nginx attend les deux services sains ; son propre healthcheck vérifie `/api/hello` et `/`.
+
+`depends_on: condition: service_healthy` attend la disponibilité, au-delà du simple lancement
+initial d'un conteneur. `php-fpm -t` permet de valider la syntaxe de la configuration ;
+le contrôle TCP du backend vérifie qu'un processus accepte les connexions.
+Les contrôles HTTP de Nginx vérifient ensuite la disponibilité du frontend et de l'API.
+
+## Signaux d'arrêt
+
+Les services déclarent `SIGTERM`. Node reçoit le signal via l'init de Compose ; PHP-FPM
+et Nginx le reçoivent grâce aux commandes lancées avec `exec` par leurs entrypoints.
+
+Pour Nginx et PHP-FPM, `SIGTERM` demande un arrêt rapide ; `SIGQUIT` est leur signal d'arrêt
+gracieux. `stop_grace_period` donne à Docker un délai avant un éventuel `SIGKILL` et ne transforme
+pas `SIGTERM` en arrêt gracieux. Les délais sont de 10 secondes pour React/Nginx et de 30 pour PHP.
+
+Pour contrôler l'arrêt sur la machine Docker :
+
+```sh
+docker compose stop
+docker compose ps -a
+docker compose logs --tail=50 backend frontend nginx
+```
+
+Relancer les services avec `docker compose up -d --wait`.
+
+## Vérifier les paramètres appliqués
+
+```sh
+docker compose exec backend php -r 'echo ini_get("memory_limit"), PHP_EOL;'
+docker compose exec backend php-fpm -tt
+docker compose exec nginx nginx -T
+docker stats --no-stream
+```
+
+Attendre notamment `128M` pour PHP et les valeurs de workers choisies dans la configuration
+Nginx générée. Après un changement du `.env`, relancer `docker compose up -d --wait` pour recréer
+les services dont la configuration change. Après un changement des Dockerfiles, dépendances
+ou sources du backend, utiliser `docker compose up --build -d --wait --wait-timeout 180`.
+
+## Références
+
+- [Installation npm reproductible](https://docs.npmjs.com/cli/commands/npm-ci/)
+- [Services optionnels avec les profils Compose](https://docs.docker.com/compose/how-tos/profiles/)
+- [Installation Composer depuis le lock](https://getcomposer.org/doc/03-cli.md#install-i)
+- [Configuration Symfony](https://symfony.com/doc/7.2/configuration.html)
+- [Rendu des modèles Nginx](https://github.com/nginx/docker-nginx/blob/master/entrypoint/20-envsubst-on-templates.sh)
+- [Signaux Nginx](https://nginx.org/en/docs/control.html)
+- [Signaux PHP-FPM](https://github.com/php/php-src/blob/master/sapi/fpm/php-fpm.8.in)

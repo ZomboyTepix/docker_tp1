@@ -5,8 +5,9 @@
 vendor/
 var/
 public/bundles/
-.env.local
-.env.*.local
+.env
+.env.*
+!.env.example
 phpunit.xml
 phpunit.result.cache
 docker-compose.override.yml

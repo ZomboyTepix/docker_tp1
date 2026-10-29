@@ -1,0 +1,18 @@
+# Support du professeur
+/dockercicd/
+
+# Configuration locale (les exemples restent versionnés)
+.env
+.env.*
+!.env.example
+
+# Dépendances et fichiers générés
+node_modules/
+/frontend/build/
+/backend/vendor/
+/backend/var/
+/backend/public/bundles/
+/reports/
+
+# Fichiers du système
+.DS_Store

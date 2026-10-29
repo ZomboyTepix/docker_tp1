@@ -1,19 +1,15 @@
 <?php
 
-// src/Controller/HelloController.php
-// Contrôleur Symfony minimal pour retourner un "Hello World" en JSON
+// Contrôleur minimal utilisé pour vérifier le fonctionnement de la stack Docker.
 
 namespace App\Controller;
 
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Routing\Attribute\Route;
 
-class HelloController
+class HelloController extends AbstractController
 {
-    /**
-     * Route GET /api/hello
-     * Retourne un message JSON de bienvenue
-     */
     #[Route('/api/hello', name: 'app_hello', methods: ['GET'])]
     public function hello(): JsonResponse
     {
@@ -26,9 +22,7 @@ class HelloController
         ]);
     }
 
-    /**
-     * Route GET / – health check basique
-     */
+    // Cette route concerne Symfony ; Nginx envoie la racine publique à React.
     #[Route('/', name: 'app_root', methods: ['GET'])]
     public function root(): JsonResponse
     {

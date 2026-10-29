@@ -1,31 +1,36 @@
 services:
-
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      target: development
     image: tp-docker/frontend:1.0-dev
-    deploy:
-      resources:
-        limits:
-          cpus: "1.5"
-          memory: 1024M
-        reservations:
-          cpus: "0.5"
-          memory: 512M
+    cpus: "${FRONTEND_CPUS:-1.5}"
+    mem_limit: "${FRONTEND_MEMORY:-1024M}"
+    init: true
     environment:
-      - NODE_ENV=development
-      - CI=false
-      - CHOKIDAR_USEPOLLING=true
-      - WDS_SOCKET_PORT=0
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: "3000"
+      WATCHPACK_POLLING: "true"
+      WDS_SOCKET_PORT: "0"
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
     networks:
       - app_network
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     stop_signal: SIGTERM
     stop_grace_period: 10s
     restart: unless-stopped
@@ -33,38 +38,24 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
     image: tp-docker/backend:1.0-dev
-    deploy:
-      resources:
-        limits:
-          cpus: "1.5"
-          memory: 512M
-        reservations:
-          cpus: "0.5"
-          memory: 256M
-    env_file:
-      - .env
+    cpus: "${BACKEND_CPUS:-1.5}"
+    mem_limit: "${BACKEND_MEMORY:-512M}"
     environment:
-      - APP_ENV=dev
-      - APP_SECRET=${APP_SECRET}
-      - PHP_FPM_MAX_CHILDREN=${PHP_FPM_MAX_CHILDREN}
-      - PHP_MEMORY_LIMIT=${PHP_MEMORY_LIMIT}
-      # Variables BDD — écrasent celles du backend/.env via interpolation DATABASE_URL
-      - DB_HOST=mysql
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - symfony_code:/var/www/html
+      APP_ENV: "${APP_ENV:-dev}"
+      APP_DEBUG: "${APP_DEBUG:-1}"
+      APP_SECRET: "${APP_SECRET:?Créer .env depuis .env.example et définir APP_SECRET}"
+      DEFAULT_URI: "${DEFAULT_URI:-http://127.0.0.1:${HTTP_PORT:-8080}}"
+      PHP_FPM_MAX_CHILDREN: "${PHP_FPM_MAX_CHILDREN:-2}"
+      PHP_MEMORY_LIMIT: "${PHP_MEMORY_LIMIT:-128M}"
     expose:
       - "9000"
     networks:
       - app_network
     healthcheck:
-      test: ["CMD", "php-fpm", "-t"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);"]
+      interval: 10s
+      timeout: 3s
       retries: 3
       start_period: 10s
     stop_signal: SIGTERM
@@ -74,43 +65,52 @@ services:
   nginx:
     build:
       context: ./ngnix
-      dockerfile: Dockerfile
     image: tp-docker/nginx:1.0
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 64M
-        reservations:
-          cpus: "0.1"
-          memory: 32M
-    env_file:
-      - .env
+    cpus: "${NGINX_CPUS:-0.25}"
+    mem_limit: "${NGINX_MEMORY:-64M}"
     environment:
-      - NGINX_WORKER_PROCESSES=${NGINX_WORKER_PROCESSES}
-      - NGINX_WORKER_CONNECTIONS=${NGINX_WORKER_CONNECTIONS}
+      NGINX_WORKER_PROCESSES: "${NGINX_WORKER_PROCESSES:-1}"
+      NGINX_WORKER_CONNECTIONS: "${NGINX_WORKER_CONNECTIONS:-1024}"
     ports:
-      - "8080:80"
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
     volumes:
-      - symfony_code:/var/www/html:ro
+      - ./backend/public:/var/www/html/public:ro
     networks:
       - app_network
     depends_on:
       backend:
         condition: service_healthy
       frontend:
-        condition: service_started
+        condition: service_healthy
     stop_signal: SIGTERM
     stop_grace_period: 10s
     restart: unless-stopped
 
-volumes:
-  symfony_code:
-    driver: local
+  frontend-deps:
+    profiles: ["tools"]
+    build:
+      context: ./frontend
+      target: tooling
+    image: tp-docker/frontend-tooling:1.0-dev
+    cpus: "${FRONTEND_CPUS:-1.5}"
+    mem_limit: "${FRONTEND_MEMORY:-1024M}"
+    init: true
+    volumes:
+      - ./frontend:/app
+    networks:
+      - app_network
+    command:
+      - sh
+      - -ec
+      - |
+        node --version
+        npm --version
+        npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+        exec npm ci --dry-run --ignore-scripts --no-audit --no-fund
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
+    restart: "no"
 
 networks:
   app_network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 192.168.100.0/24
