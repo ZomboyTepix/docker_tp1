@@ -9,6 +9,7 @@ les paiements et abonnements, ainsi que les espaces parent, professeur et admini
 Le socle applicatif comprend une interface React, une API Symfony et un serveur web Nginx.
 La version actuelle expose une page « Hello World » et une route JSON pour vérifier les
 communications entre les services. Les modules métier ne sont pas implémentés à ce stade.
+Un conteneur de lint contrôle automatiquement la qualité du code frontend.
 
 ## Démarrage
 
@@ -56,6 +57,36 @@ docker compose down
 
 `docker compose down` arrête les conteneurs et supprime le réseau de cette stack.
 
+## Contrôle statique du code
+
+Le lint est une étape de CI : il analyse le code JavaScript et JSX sans exécuter les
+fonctionnalités de l'application. Il détecte notamment les variables inutilisées, les noms
+non définis, les comparaisons non strictes et les problèmes couverts par les règles React.
+
+Depuis la racine du dépôt :
+
+```sh
+docker compose run --rm --no-deps --build lint
+```
+
+Le contrôle doit se terminer avec zéro erreur et zéro avertissement. Son résultat est affiché
+dans le terminal et enregistré dans `reports/lint.txt`, un fichier généré ignoré par Git.
+
+| Code de sortie | Signification |
+|---|---|
+| `0` | Analyse réussie, sans erreur ni avertissement. |
+| `1` | Au moins une erreur ou un avertissement détecté dans le code. |
+| `2` | Problème empêchant l'analyse ou l'écriture du rapport. |
+| `143` | Analyse interrompue par `SIGTERM`. |
+
+Ces codes permettent à une pipeline de décider si elle peut poursuivre son exécution.
+Le conteneur fonctionne indépendamment du frontend, du backend et de Nginx.
+
+Pour vérifier que le contrôle détecte un défaut, ajouter temporairement une variable
+inutilisée dans `frontend/src/App.js`, par exemple `const variableInutilisee = 42;`.
+Relancer le lint : il doit signaler `no-unused-vars` et sortir avec le code `1`.
+Retirer ensuite cette variable et relancer le contrôle pour obtenir le code `0`.
+
 ## Architecture et communications
 
 ```mermaid
@@ -80,6 +111,7 @@ Les dépendances applicatives sont installées depuis les manifestes de ce dép�
 | Frontend | `frontend/` | `tp-docker/frontend:1.0-dev` | Code React, dépendances npm et commande du serveur de développement. |
 | Backend | `backend/` | `tp-docker/backend:1.0-dev` | Extensions PHP, dépendances Symfony, utilisateur et entrypoint de configuration. |
 | Serveur web | `ngnix/` | `tp-docker/nginx:1.0` | Routage HTTP/FastCGI, modèle de configuration et healthcheck. |
+| Lint | Racine du dépôt, `ci/Dockerfile.lint` | `tp-docker/lint:1.0` | Configuration ESLint, analyse des sources et production d'un rapport. |
 | Outil de dépendances | `frontend/`, cible `tooling` | `tp-docker/frontend-tooling:1.0-dev` | Manifeste npm et environnement commun à l'image frontend pour préparer son verrouillage. |
 
 ### Frontend React
@@ -105,6 +137,46 @@ Les dépendances applicatives sont installées depuis les manifestes de ce dép�
 Les montages `frontend/src` et `frontend/public` sont en lecture seule. Les dépendances
 sont installées dans l'image, tandis que les sources et fichiers publics proviennent des montages.
 Après une modification de `package.json`, exécuter `frontend-deps` puis reconstruire l'image.
+
+### Image de lint et choix de CI
+
+- `ci/Dockerfile.lint` construit une image personnalisée à partir de `node:20-alpine`,
+  comme le frontend, afin d'utiliser le même environnement Node/npm.
+- ESLint est adapté au JavaScript et au JSX du projet. Sa version `8.57.1` et celle de
+  `eslint-config-react-app` (`7.0.1`) sont déjà verrouillées dans `frontend/package-lock.json`
+  par les dépendances de `react-scripts`.
+- Le même manifeste et le même lock sont utilisés par le frontend et le lint pour garder
+  un seul ensemble de versions. Ce choix installe aussi les dépendances du frontend dans
+  l'image de lint ; il évite de maintenir un second verrouillage de l'outillage React.
+- `npm ci --ignore-scripts` installe les dépendances verrouillées sans exécuter leurs scripts
+  d'installation. Aucun paquet système supplémentaire n'est nécessaire.
+- `WORKDIR /app` fixe le répertoire d'analyse. `COPY` apporte les manifestes, la configuration,
+  les sources et le programme de lancement `ci/lint.cjs`.
+- Le `.dockerignore` à la racine exclut notamment les fichiers d'environnement locaux,
+  les dépendances de l'hôte et les rapports du contexte de build.
+- `NODE_ENV=development` fournit le contexte attendu par l'outillage Babel/React.
+  `FORCE_COLOR=0` garde un rapport texte sans codes de couleur.
+
+La configuration `frontend/.eslintrc.json` étend les règles de `react-app`. Les règles
+`no-unused-vars`, `no-undef` et `eqeqeq` sont traitées comme des erreurs pour détecter
+respectivement les variables inutilisées, les identifiants inconnus et les comparaisons
+non strictes. `root: true` limite la recherche de configuration à ce projet.
+
+L'entrypoint lance directement `node /app/ci/lint.cjs`. Le programme utilise l'API ESLint,
+désactive les corrections automatiques et le cache, puis écrit le rapport avec les fonctions
+standard de Node.js (`mkdir` et `writeFile`). Il conserve un code de sortie exploitable par
+la CI, y compris en cas d'erreur de configuration. Son gestionnaire `SIGTERM` arrête l'analyse
+avec le code `143` ; `init: true` transmet le signal au processus Node.
+
+Le service appartient au profil `ci` : le démarrage habituel de l'application lance uniquement
+les trois services applicatifs. Un `docker compose run lint` active ce service explicitement.
+`restart: "no"` convient à un contrôle qui se termine, et `--rm` supprime son conteneur après
+l'exécution. Aucun healthcheck n'est requis pour cette tâche ponctuelle.
+
+Les sources et la configuration ESLint sont montées en lecture seule. Seul `reports/` est
+monté en écriture pour conserver le résultat sur l'hôte. Le conteneur n'expose aucun port et
+utilise `network_mode: none` : l'analyse n'a pas besoin de communiquer avec l'application ni
+avec Internet. Les téléchargements npm ont lieu au build, avant cette isolation réseau.
 
 ### Outil de gestion des dépendances
 
@@ -207,6 +279,7 @@ Les fichiers `.env.example` sont versionnés ; les fichiers de configuration loc
 | Frontend et outil de dépendances | `FRONTEND_CPUS`, `FRONTEND_MEMORY` | 1,5 CPU / 1024 Mo | Budget pour la compilation React ou la résolution ponctuelle des dépendances npm. |
 | Backend | `BACKEND_CPUS`, `BACKEND_MEMORY` | 1,5 CPU / 512 Mo | Budget partagé par PHP-FPM, ses workers et OPcache. |
 | Nginx | `NGINX_CPUS`, `NGINX_MEMORY` | 0,25 CPU / 64 Mo | Proxy léger, avec un worker par défaut. |
+| Lint | `LINT_CPUS`, `LINT_MEMORY` | 0,5 CPU / 512 Mo | Analyse ponctuelle d'un petit frontend, avec chargement du parseur et des règles React. |
 
 `cpus` limite le temps CPU et `mem_limit` la mémoire du conteneur. Ce sont des plafonds,
 pas des réservations. Ils s'appliquent aux conteneurs lancés, pas aux commandes de build.
@@ -224,6 +297,7 @@ transmet les variables d'environnement et `--publish` configure la publication d
 | `NGINX_WORKER_PROCESSES=1` | Nombre de workers Nginx (`auto` est également accepté par Nginx). |
 | `NGINX_WORKER_CONNECTIONS=1024` | Maximum de connexions par worker Nginx. |
 | `HOST`, `PORT`, `WATCHPACK_POLLING`, `WDS_SOCKET_PORT` | Écoute React sur le réseau Docker et rechargement via le proxy. |
+| `LINT_REPORT_DIR=/reports` | Répertoire du rapport dans le conteneur de lint, monté vers `reports/` sur l'hôte. |
 
 Les quotas sont adaptés à une exécution locale, à observer avec `docker stats`.
 La mémoire des workers et le cache partagé consomment le budget total du backend : augmenter
@@ -276,6 +350,7 @@ ou sources du backend, utiliser `docker compose up --build -d --wait --wait-time
 ## Références
 
 - [Installation npm reproductible](https://docs.npmjs.com/cli/commands/npm-ci/)
+- [API Node.js ESLint](https://archive.eslint.org/docs/developer-guide/nodejs-api)
 - [Services optionnels avec les profils Compose](https://docs.docker.com/compose/how-tos/profiles/)
 - [Installation Composer depuis le lock](https://getcomposer.org/doc/03-cli.md#install-i)
 - [Configuration Symfony](https://symfony.com/doc/7.2/configuration.html)

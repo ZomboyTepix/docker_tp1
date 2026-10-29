@@ -1,0 +1,11 @@
+.git
+**/.DS_Store
+dockercicd/
+**/node_modules/
+**/vendor/
+**/var/
+**/build/
+reports/
+**/.env
+**/.env.*
+!**/.env.example

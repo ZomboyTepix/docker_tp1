@@ -1,0 +1,9 @@
+{
+  "root": true,
+  "extends": ["react-app"],
+  "rules": {
+    "no-unused-vars": "error",
+    "no-undef": "error",
+    "eqeqeq": ["error", "always"]
+  }
+}

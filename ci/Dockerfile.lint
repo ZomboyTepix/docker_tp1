@@ -1,0 +1,18 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Réutiliser les versions de l'outillage React verrouillées par le projet.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+
+COPY frontend/.eslintrc.json ./
+COPY frontend/src ./src
+COPY ci/lint.cjs ./ci/lint.cjs
+
+ENV NODE_ENV=development
+ENV FORCE_COLOR=0
+ENV LINT_REPORT_DIR=/reports
+
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["node", "/app/ci/lint.cjs"]

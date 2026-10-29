@@ -86,6 +86,26 @@ services:
     stop_grace_period: 10s
     restart: unless-stopped
 
+  lint:
+    profiles: ["ci"]
+    build:
+      context: .
+      dockerfile: ci/Dockerfile.lint
+    image: tp-docker/lint:1.0
+    cpus: "${LINT_CPUS:-0.5}"
+    mem_limit: "${LINT_MEMORY:-512M}"
+    init: true
+    network_mode: none
+    environment:
+      LINT_REPORT_DIR: /reports
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/.eslintrc.json:/app/.eslintrc.json:ro
+      - ./reports:/reports
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
+    restart: "no"
+
   frontend-deps:
     profiles: ["tools"]
     build:
