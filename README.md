@@ -11,6 +11,7 @@ La version actuelle expose une page « Hello World » et une route JSON pour vé
 communications entre les services. Les modules métier ne sont pas implémentés à ce stade.
 Un conteneur de lint contrôle automatiquement la qualité du code frontend.
 Un conteneur de tests vérifie les réponses de l'API Symfony.
+Le script `pipeline.sh` enchaîne les contrôles et le déploiement local.
 
 ## Démarrage
 
@@ -41,8 +42,7 @@ Le build de l'application utilise ensuite `npm ci` pour installer les versions v
 Depuis la racine du projet :
 
 ```sh
-docker compose config --quiet
-docker compose up --build -d --wait --wait-timeout 180
+./pipeline.sh
 docker compose ps
 curl --fail --show-error http://127.0.0.1:8080/
 curl --fail --show-error http://127.0.0.1:8080/api/hello
@@ -57,6 +57,74 @@ docker compose down
 ```
 
 `docker compose down` arrête les conteneurs et supprime le réseau de cette stack.
+
+## Pipeline CI/CD locale
+
+La commande `./pipeline.sh` réalise les opérations dans cet ordre :
+
+1. Vérifier la configuration Compose.
+2. Construire les images de lint et de tests.
+3. Exécuter le lint React.
+4. Exécuter les tests Symfony si le lint réussit.
+5. Construire les trois images applicatives si les tests réussissent.
+6. Démarrer les services et attendre leurs healthchecks.
+
+```mermaid
+flowchart TD
+    lint["Lint React"] -->|"Code 0"| tests["Tests Symfony"]
+    tests -->|"Code 0"| build["Build des images applicatives"]
+    build -->|"Réussi"| lancement["Démarrage et healthchecks"]
+    lint -->|"Échec"| arret["Arrêt de la pipeline"]
+    tests -->|"Échec"| arret
+    build -->|"Échec"| arret
+    lancement -->|"Échec"| arret
+```
+
+La CI correspond aux contrôles de code et aux tests. La partie CD construit les images
+applicatives puis lance l'application sur la machine Docker. Le script joue le rôle d'un
+serveur de CI local : il vérifie le code de sortie de chaque commande avant de poursuivre.
+Les dépendances `depends_on` de Compose gèrent ensuite l'ordre de démarrage des services.
+
+Les contrôles utilisent `docker compose run --rm --no-deps -T`. Chaque exécution crée un
+nouveau conteneur, n'en démarre pas d'autre et transmet son résultat au script. `-T` évite
+l'utilisation d'un terminal interactif. Les rapports du lancement précédent sont retirés
+avant les contrôles ; les nouveaux restent disponibles dans `reports/`.
+
+`up --no-build --wait` utilise les images qui viennent d'être construites et attend que
+les trois services soient sains. Le délai est de 180 secondes par défaut. Pour l'adapter :
+
+```sh
+PIPELINE_WAIT_TIMEOUT=300 ./pipeline.sh
+```
+
+Cette variable est fournie à la commande dans le terminal. Les quotas des conteneurs et
+le port HTTP restent configurés dans `.env`.
+
+Si un contrôle échoue, le script s'arrête avant la construction et le démarrage applicatifs.
+Les conteneurs applicatifs en cours ne sont pas recréés à ce stade. Les montages de
+développement restent actifs : les changements des sources React peuvent donc être visibles
+immédiatement dans une application déjà lancée.
+
+Si les healthchecks échouent après le démarrage, la pipeline retourne un échec. Les services
+peuvent alors être inspectés avec `docker compose ps` et `docker compose logs` ; le script
+n'effectue pas de retour automatique à une image précédente.
+
+Le script gère `SIGINT` et `SIGTERM`. Il arrête le conteneur de contrôle actif, identifié
+par un nom propre à cette exécution, puis termine la commande Docker en cours. Les codes
+`130` et `143` indiquent respectivement ces interruptions.
+
+### Vérifier le blocage de la pipeline
+
+1. Lancer une première fois `./pipeline.sh` avec un code valide.
+2. Ajouter temporairement une variable inutilisée dans `frontend/src/App.js` et relancer.
+   La pipeline doit s'arrêter au lint ; le rapport JUnit précédent doit avoir été supprimé.
+3. Retirer cette variable, modifier temporairement le message de `/api/hello`, puis relancer.
+   Le lint doit passer et les tests doivent échouer avant la construction applicative.
+4. Remettre `Hello World` dans le contrôleur et relancer pour retrouver une pipeline réussie.
+
+Les commandes individuelles ci-dessous permettent également de relancer un seul contrôle.
+Pour un démarrage de développement direct, utiliser
+`docker compose up --build -d --wait --wait-timeout 180`.
 
 ## Contrôle statique du code
 
@@ -125,17 +193,20 @@ de reconstruire l'image de tests.
 
 ## Architecture et communications
 
-```mermaid
-flowchart TD
-    client["Navigateur"] -->|"HTTP 127.0.0.1:8080"| nginx["Nginx :80"]
-    nginx -->|"HTTP et WebSocket"| frontend["React :3000"]
-    nginx -->|"FastCGI /api/*"| backend["Symfony PHP-FPM :9000"]
-```
+### Infrastructure Docker
+
+![Infrastructure Docker : application, contrôles CI et rapports](./schema_infrastructure.jpg)
+
+### Communications et enchaînement des contrôles
+
+![Routage des requêtes et pipeline locale](./schema_communication.jpg)
 
 Seul Nginx publie un port, limité à `127.0.0.1` pour l'usage local. React et PHP-FPM
 communiquent sur le réseau bridge `app_network`, par leurs noms de service.
 Docker choisit le sous-réseau : aucune plage IP fixe n'est imposée.
 Il n'y a pas encore de service de base de données ni de connexion SQL utilisée par l'API.
+Les conteneurs de lint et de tests ont leur réseau désactivé. Ils lisent les fichiers montés
+et écrivent leurs rapports dans le même dossier de l'hôte. Le script enchaîne leurs exécutions.
 
 ## Images personnalisées
 
@@ -384,6 +455,8 @@ le nombre de workers peut nécessiter d'adapter ce budget.
 initial d'un conteneur. `php-fpm -t` permet de valider la syntaxe de la configuration ;
 le contrôle TCP du backend vérifie qu'un processus accepte les connexions.
 Les contrôles HTTP de Nginx vérifient ensuite la disponibilité du frontend et de l'API.
+La pipeline lance ces services après le succès du lint et des tests, puis attend les
+healthchecks avant d'annoncer une réussite.
 
 ## Signaux d'arrêt
 
@@ -423,6 +496,8 @@ ou sources du backend, utiliser `docker compose up --build -d --wait --wait-time
 - [Installation npm reproductible](https://docs.npmjs.com/cli/commands/npm-ci/)
 - [API Node.js ESLint](https://archive.eslint.org/docs/developer-guide/nodejs-api)
 - [Services optionnels avec les profils Compose](https://docs.docker.com/compose/how-tos/profiles/)
+- [Conteneurs ponctuels avec Compose](https://docs.docker.com/reference/cli/docker/compose/run/)
+- [Démarrage et attente des services](https://docs.docker.com/reference/cli/docker/compose/up/)
 - [Installation Composer depuis le lock](https://getcomposer.org/doc/03-cli.md#install-i)
 - [Configuration Symfony](https://symfony.com/doc/7.2/configuration.html)
 - [Tests Symfony](https://symfony.com/doc/7.2/testing.html)

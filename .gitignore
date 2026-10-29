@@ -13,6 +13,7 @@ node_modules/
 /backend/var/
 /backend/public/bundles/
 /reports/
+/generated_images/
 
 # Fichiers du système
 .DS_Store
